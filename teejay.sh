@@ -18,13 +18,13 @@ display_logo() {
     echo "    | |  | |____| |____| |__| |   / ____ \\ | |   "
     echo "    |_|  |______|______|\\____/   /_/    \\_\\|_|   "
     echo -e "${NC}"
-    echo -e "${YELLOW}           TEEJAY اختصاصی - نسخه نهایی 2026 ${NC}"
+    echo -e "${YELLOW}           TEEJAY EXCLUSIVE - FINAL VERSION 2026 ${NC}"
     echo "---------------------------------------------------"
 }
 
 # --- System Optimization ---
 optimize_system() {
-    echo -e "${YELLOW}[*] در حال بهینه‌سازی پارامترهای شبکه و BBR...${NC}"
+    echo -e "${YELLOW}[*] Optimizing Network Parameters (BBR & TCP)...${NC}"
     cat <<EOF > /etc/sysctl.d/teejay.conf
 net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=bbr
@@ -39,26 +39,24 @@ EOF
 
 # --- Installation ---
 install_core() {
-    echo -e "${YELLOW}[*] در حال نصب پیش‌نیازها و هسته اصلی...${NC}"
+    echo -e "${YELLOW}[*] Installing dependencies and V2Ray Core...${NC}"
     apt update && apt install -y curl jq uuid-runtime
     curl -L https://raw.githubusercontent.com/v2fly/fxtls/main/install.sh | bash
     systemctl enable v2ray
 }
 
-# --- Setup Iran ---
+# --- Setup Iran (Bridge) ---
 setup_iran() {
     display_logo
     optimize_system
     install_core
     
-    # Generate Unique ID
     u_id=$(uuidgen)
-    echo -e "${BLUE}Generated Secret Key: ${u_id}${NC}"
+    echo -e "${BLUE}Unique Secret Key Generated: ${u_id}${NC}"
     
-    read -p "آی‌پی سرور خارج را وارد کنید: " foreign_ip
-    read -p "پورت‌های مورد نظر را با کاما جدا کنید (مثلا 80,443,2082): " ports
+    read -p "Enter Foreign Server IP: " foreign_ip
+    read -p "Enter Ports to Forward (comma separated, e.g., 80,443,2082): " ports
     
-    # Base Config for Iran
     cat <<EOF > /usr/local/etc/v2ray/config.json
 {
   "reverse": { "bridges": [ { "tag": "bridge", "domain": "teejay.internal" } ] },
@@ -72,7 +70,6 @@ setup_iran() {
     }
 EOF
 
-    # Loop for Forwarding Ports
     IFS=',' read -ra ADDR <<< "$ports"
     for port in "${ADDR[@]}"; do
         cat <<EOF >> /usr/local/etc/v2ray/config.json
@@ -80,7 +77,6 @@ EOF
 EOF
     done
 
-    # Routing Section
     echo "  ], \"routing\": { \"rules\": [" >> /usr/local/etc/v2ray/config.json
     for port in "${ADDR[@]}"; do
         echo " { \"type\": \"field\", \"inboundTag\": [\"in-${port}\"], \"outboundTag\": \"bridge\" }," >> /usr/local/etc/v2ray/config.json
@@ -89,21 +85,21 @@ EOF
 
     systemctl restart v2ray
     echo -e "---------------------------------------------------"
-    echo -e "${GREEN}[+] سرور ایران آماده است!${NC}"
-    echo -e "${YELLOW}!!! کپی کنید !!!${NC}"
-    echo -e "آیدی اختصاصی شما: ${BLUE}${u_id}${NC}"
+    echo -e "${GREEN}[+] Iran Server is READY!${NC}"
+    echo -e "${YELLOW}!!! COPY THIS KEY !!!${NC}"
+    echo -e "UUID: ${BLUE}${u_id}${NC}"
     echo -e "---------------------------------------------------"
-    read -p "پس از کپی کردن آیدی، اینتر بزنید..."
+    read -p "Press Enter after you copied the UUID..."
 }
 
-# --- Setup Kharej ---
+# --- Setup Foreign (Portal) ---
 setup_kharej() {
     display_logo
     optimize_system
     install_core
     
-    read -p "آی‌پی سرور ایران را وارد کنید: " iran_ip
-    read -p "آیدی اختصاصی (UUID) را وارد کنید: " u_id
+    read -p "Enter Iran Server IP: " iran_ip
+    read -p "Enter UUID: " u_id
     
     cat <<EOF > /usr/local/etc/v2ray/config.json
 {
@@ -126,27 +122,27 @@ setup_kharej() {
 EOF
 
     systemctl restart v2ray
-    echo -e "${GREEN}[+] اتصال معکوس از خارج به ایران برقرار شد.${NC}"
-    read -p "برای بازگشت به منو اینتر بزنید..."
+    echo -e "${GREEN}[+] Reverse Connection established from Foreign to Iran.${NC}"
+    read -p "Press Enter to return to menu..."
 }
 
 # --- Main Logic ---
 while true; do
     display_logo
-    echo -e "1) Setup Iran ${BLUE}(ایران - لیسنر)${NC}"
-    echo -e "2) Setup Kharej ${BLUE}(خارج - کانکتور)${NC}"
-    echo -e "3) Status ${BLUE}(وضعیت سرویس)${NC}"
-    echo -e "4) CronJob ${BLUE}(تضمین پایداری)${NC}"
-    echo -e "5) Exit ${RED}(خروج)${NC}"
+    echo -e "1) Setup Iran ${BLUE}(Listener/Bridge)${NC}"
+    echo -e "2) Setup Foreign ${BLUE}(Connector/Portal)${NC}"
+    echo -e "3) Status ${BLUE}(Check Services)${NC}"
+    echo -e "4) CronJob ${BLUE}(Enable Persistence)${NC}"
+    echo -e "5) Exit ${RED}(Quit)${NC}"
     echo "---------------------------------------------------"
-    read -p "انتخاب شما: " opt
+    read -p "Select an option: " opt
     
     case $opt in
         1) setup_iran ;;
         2) setup_kharej ;;
-        3) systemctl status v2ray | grep -E "Active|Main PID" ; read -p "Enter..." ;;
-        4) (crontab -l 2>/dev/null; echo "*/10 * * * * systemctl restart v2ray") | crontab - && echo "CronJob ست شد." ; sleep 2 ;;
+        3) systemctl status v2ray | grep -E "Active|Main PID" ; read -p "Press Enter..." ;;
+        4) (crontab -l 2>/dev/null; echo "*/10 * * * * systemctl restart v2ray") | crontab - && echo "CronJob set successfully." ; sleep 2 ;;
         5) exit 0 ;;
-        *) echo "گزینه اشتباه" ; sleep 1 ;;
+        *) echo "Invalid option" ; sleep 1 ;;
     esac
 done

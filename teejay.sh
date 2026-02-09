@@ -1,9 +1,4 @@
-#!/usr/bin/env bash
-
-# --- PRE-SETUP ---
-export LC_ALL=C
-LOG_LINES=()
-LOG_MAX=8
+#!/bin/bash
 
 # Colors
 RED='\033[0;31m'
@@ -11,201 +6,229 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
-NC='\033[0m'
+NC='\033[0m' # No Color
 
-# --- UI & LOGGING ---
-banner() {
+# Configuration Files
+TUNNEL_CONF="/etc/teejay_tunnel.conf"
+
+# Helper Functions
+function print_logo() {
     clear
-    echo -e "${CYAN}╔═════════════════════════════════════════════════════╗${NC}"
-    echo -e "${BLUE}║  ████████╗███████╗███████╗██╗ █████╗ ██╗   ██╗      ║${NC}"
-    echo -e "${BLUE}║  ╚══██╔══╝██╔════╝██╔════╝██║██╔══██╗╚██╗ ██╔╝      ║${NC}"
-    echo -e "${BLUE}║     ██║   █████╗  █████╗  ██║███████║ ╚████╔╝       ║${NC}"
-    echo -e "${BLUE}║     ██║   ██╔══╝  ██╔══╝  ██║██╔══██║  ╚██╔╝        ║${NC}"
-    echo -e "${BLUE}║     ██║   ███████╗███████╗██║██║  ██║   ██║         ║${NC}"
-    echo -e "${BLUE}║     ╚═╝   ╚══════╝╚══════╝╚═╝╚═╝  ╚═╝   ╚═╝         ║${NC}"
-    echo -e "${YELLOW}║                EXCLUSIVE TUNNEL SYSTEM              ║${NC}"
-    echo -e "${CYAN}╚═════════════════════════════════════════════════════╝${NC}"
+    echo -e "${CYAN}"
+    echo "  _______ ______ ______      _   _ __   __"
+    echo " |__   __|  ____|  ____|    | | | |  \\ /  |"
+    echo "    | |  | |__  | |__       | | | | \\ V / "
+    echo "    | |  |  __| |  __|  _   | | | |  > <  "
+    echo "    | |  | |____| |____| |__| |_| | / . \ "
+    echo "    |_|  |______|______|\\____/\\___|/_/ \\_\\"
+    echo -e "${NC}"
+    echo -e "${YELLOW}       EXCLUSIVE TUNNEL SOLUTION${NC}"
+    echo -e "${BLUE}       Optimized for High Latency Networks${NC}"
+    echo "------------------------------------------------"
 }
 
-add_log() {
-    local ts=$(date +"%H:%M:%S")
-    LOG_LINES+=("[$ts] $1")
-    ((${#LOG_LINES[@]} > LOG_MAX)) && LOG_LINES=("${LOG_LINES[@]:1}")
+function check_root() {
+    if [[ $EUID -ne 0 ]]; then
+       echo -e "${RED}This script must be run as root${NC}" 
+       exit 1
+    fi
 }
 
-render_logs() {
-    echo -e "${YELLOW}┌──────────────────────── ACTION LOG ────────────────────────┐${NC}"
-    for line in "${LOG_LINES[@]}"; do
-        printf "${CYAN}│${NC} %-58s ${CYAN}│${NC}\n" "$line"
-    done
-    echo -e "${YELLOW}└────────────────────────────────────────────────────────────┘${NC}"
+function get_public_ip() {
+    # Try to get IP without external tools like curl if possible, but curl is standard.
+    # If network is restricted, we ask user to confirm.
+    DETECTED_IP=$(ip -4 addr | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v "127.0.0" | head -n 1)
+    echo -e "Detected Local IP: ${GREEN}$DETECTED_IP${NC}"
+    read -p "Is this your Public IP? (y/n): " confirm
+    if [[ $confirm == "y" ]]; then
+        LOCAL_IP=$DETECTED_IP
+    else
+        read -p "Enter your Public IP manually: " LOCAL_IP
+    fi
 }
 
-# --- VALIDATION ENGINE ---
-trim() { sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' <<<"$1"; }
-
-is_valid_ipv4() {
-    local ip=$1
-    [[ $ip =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
-    IFS='.' read -r a b c d <<< "$ip"
-    for octet in $a $b $c $d; do
-        ((octet < 0 || octet > 255)) && return 1
-    done
-    return 0
-}
-
-ask_until_valid() {
-    local prompt=$1
-    local validator=$2
-    local var_name=$3
-    local input=""
-    while true; do
-        banner
-        render_logs
-        echo -e "${YELLOW}Input Required:${NC}"
-        read -p "$prompt " input
-        input=$(trim "$input")
-        if [ -z "$input" ]; then
-            add_log "Empty input, try again."
-            continue
-        fi
-        if $validator "$input"; then
-            eval "$var_name=\"$input\""
-            add_log "Set $var_name to $input"
-            break
-        else
-            add_log "Invalid input: $input"
-        fi
-    done
-}
-
-# Dummy validator for anything
-any_val() { return 0; }
-is_int() { [[ "$1" =~ ^[0-9]+$ ]]; }
-
-# --- CORE LOGIC ---
-
-setup_tunnel() {
-    local side=$1 # Iran or Kharej
-    banner
+function setup_tunnel() {
+    ROLE=$1 # "master" (Iran) or "slave" (Kharej)
     
-    local DEFAULT_IP=$(hostname -I | awk '{print $1}')
-    local LOCAL_PUBLIC_IP
+    print_logo
+    echo -e "${GREEN}>>> Setup Tunnel ($ROLE Side)${NC}"
     
-    # Confirm Local IP
-    while true; do
-        banner
-        echo -e "Detected Local IP: ${GREEN}$DEFAULT_IP${NC}"
-        read -p "Use this IP? (y/n): " confirm
-        if [[ "$confirm" == "y" ]]; then
-            LOCAL_PUBLIC_IP=$DEFAULT_IP
-            break
-        else
-            ask_until_valid "Enter Local Public IP:" is_valid_ipv4 LOCAL_PUBLIC_IP
-            break
+    get_public_ip
+    
+    read -p "Enter REMOTE Server IP: " REMOTE_IP
+    
+    echo -e "${YELLOW}--- Private IP Configuration ---${NC}"
+    echo "Example: 10.10.10.1 for Iran, 10.10.10.2 for Kharej"
+    read -p "Enter Local Private IP (e.g., 10.10.10.1): " PRIVATE_IP_LOCAL
+    read -p "Enter Remote Private IP (e.g., 10.10.10.2): " PRIVATE_IP_REMOTE
+    
+    # Save Config
+    echo "LOCAL_IP=$LOCAL_IP" > $TUNNEL_CONF
+    echo "REMOTE_IP=$REMOTE_IP" >> $TUNNEL_CONF
+    echo "PRIVATE_IP_LOCAL=$PRIVATE_IP_LOCAL" >> $TUNNEL_CONF
+    echo "PRIVATE_IP_REMOTE=$PRIVATE_IP_REMOTE" >> $TUNNEL_CONF
+    
+    # Create Tunnel Script
+    cat <<EOF > /usr/local/bin/teejay-up.sh
+#!/bin/bash
+# Clear old tunnel if exists
+ip tunnel del tj-tun0 2>/dev/null
+
+# Create IPIP Tunnel (Lighter than GRE)
+ip tunnel add tj-tun0 mode ipip remote $REMOTE_IP local $LOCAL_IP ttl 255
+ip link set tj-tun0 up
+ip addr add $PRIVATE_IP_LOCAL/30 dev tj-tun0
+
+# Optimize MTU/MSS for Iran Network
+ip link set dev tj-tun0 mtu 1300
+iptables -t mangle -A POSTROUTING -p tcp --tcp-flags SYN,RST SYN -o tj-tun0 -j TCPMSS --set-mss 1260
+
+echo "Tunnel Interface tj-tun0 Created."
+EOF
+    
+    chmod +x /usr/local/bin/teejay-up.sh
+    bash /usr/local/bin/teejay-up.sh
+
+    # Create Keepalive Watchdog (The Optimization)
+    echo -e "${BLUE}Installing Watchdog Service (Anti-Disconnect)...${NC}"
+    
+    cat <<EOF > /usr/local/bin/teejay-watchdog.sh
+#!/bin/bash
+REMOTE="$PRIVATE_IP_REMOTE"
+while true; do
+    if ! ping -c 3 -W 2 \$REMOTE > /dev/null; then
+        echo "\$(date): Connection lost, restarting tunnel..."
+        /usr/local/bin/teejay-up.sh
+        # Re-apply firewall rules if needed (calls the forward script if exists)
+        if [ -f /usr/local/bin/teejay-fwd.sh ]; then
+            bash /usr/local/bin/teejay-fwd.sh
         fi
-    done
+    fi
+    sleep 20
+done
+EOF
+    chmod +x /usr/local/bin/teejay-watchdog.sh
 
-    ask_until_valid "Enter Remote Public IP:" is_valid_ipv4 REMOTE_PUBLIC_IP
-    ask_until_valid "Enter Private IP (e.g., 10.0.0.1):" is_valid_ipv4 LOCAL_PRIV_IP
-    ask_until_valid "Enter Remote Private IP (e.g., 10.0.0.2):" is_valid_ipv4 REMOTE_PRIV_IP
-
-    # Persistence via Systemd
-    add_log "Creating Systemd service for persistence..."
-    cat <<EOF > /etc/systemd/system/teejay-tun.service
+    # Systemd Service
+    cat <<EOF > /etc/systemd/system/teejay-tunnel.service
 [Unit]
-Description=TEEJAY Exclusive SIT Tunnel
+Description=TeeJay Exclusive Tunnel Watchdog
 After=network.target
 
 [Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStartPre=-/sbin/ip tunnel del tj-tun
-ExecStart=/sbin/ip tunnel add tj-tun mode sit remote $REMOTE_PUBLIC_IP local $LOCAL_PUBLIC_IP
-ExecStart=/sbin/ip addr add $LOCAL_PRIV_IP peer $REMOTE_PRIV_IP dev tj-tun
-ExecStart=/sbin/ip link set tj-tun mtu 1420
-ExecStart=/sbin/ip link set tj-tun up
-# MSS Clamping to prevent drops
-ExecStart=/sbin/iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
-ExecStop=/sbin/ip link set tj-tun down
-ExecStop=/sbin/ip tunnel del tj-tun
-ExecStop=/sbin/iptables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+ExecStart=/usr/local/bin/teejay-watchdog.sh
+Restart=always
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
     systemctl daemon-reload
-    systemctl enable --now teejay-tun.service
-    
-    # Keep Alive Cron
-    (crontab -l 2>/dev/null | grep -v "tj-tun"; echo "*/1 * * * * ping -c 1 $REMOTE_PRIV_IP >/dev/null 2>&1") | crontab -
-    
-    add_log "$side Tunnel Established Successfully."
-    read -p "Success! Press Enter to continue..."
+    systemctl enable teejay-tunnel
+    systemctl start teejay-tunnel
+
+    echo -e "${GREEN}Tunnel Setup Complete with Watchdog!${NC}"
+    read -p "Press Enter to return..."
 }
 
-tunnel_forward() {
-    banner
-    render_logs
-    ask_until_valid "Enter Ports to Forward (e.g., 443,2053):" any_val PORTS
-    ask_until_valid "Enter Remote Private IP (The other side):" is_valid_ipv4 REMOTE_PRIV
-    
-    echo 1 > /proc/sys/net/ipv4/ip_forward
-    
-    IFS=',' read -ra ADDR <<< "$PORTS"
-    for port in "${ADDR[@]}"; do
-        iptables -t nat -A PREROUTING -p tcp --dport $port -j DNAT --to-destination $REMOTE_PRIV:$port
-        iptables -t nat -A PREROUTING -p udp --dport $port -j DNAT --to-destination $REMOTE_PRIV:$port
-        iptables -t nat -A POSTROUTING -j MASQUERADE
-        add_log "Port $port forwarded to $REMOTE_PRIV"
-    done
-    read -p "Forwarding rules applied. Press Enter..."
-}
-
-status_check() {
-    banner
-    echo -e "${YELLOW}>>> Network Interface:${NC}"
-    ip addr show tj-tun 2>/dev/null || echo -e "${RED}Interface tj-tun not found.${NC}"
-    echo -e "\n${YELLOW}>>> Internal Ping Test:${NC}"
-    R_IP=$(ip addr show tj-tun 2>/dev/null | grep peer | awk '{print $4}' | cut -d/ -f1)
-    if [ ! -z "$R_IP" ]; then
-        ping -c 2 $R_IP
+function show_status() {
+    print_logo
+    if [ -f $TUNNEL_CONF ]; then
+        source $TUNNEL_CONF
+        echo -e "Local Private IP: ${CYAN}$PRIVATE_IP_LOCAL${NC}"
+        echo -e "Remote Private IP: ${CYAN}$PRIVATE_IP_REMOTE${NC}"
+        echo -e "Tunnel Status (Interface):"
+        ip addr show tj-tun0 | grep inet
+        echo "-----------------------------------"
+        echo -e "${YELLOW}Testing Connectivity (Ping)...${NC}"
+        ping -c 4 $PRIVATE_IP_REMOTE
     else
-        echo -e "${RED}Tunnel is not linked.${NC}"
+        echo -e "${RED}No configuration found!${NC}"
     fi
+    read -p "Press Enter to return..."
+}
+
+function setup_forwarding() {
+    print_logo
+    echo -e "${GREEN}>>> Setup Port Forwarding (IPTABLES)${NC}"
+    echo -e "${YELLOW}Note: This should be run on the IRAN server.${NC}"
+    
+    if [ ! -f $TUNNEL_CONF ]; then
+        echo -e "${RED}Please setup the tunnel first!${NC}"
+        read -p "Press Enter..."
+        return
+    fi
+    
+    source $TUNNEL_CONF
+    
+    read -p "Enter Local Port (Iran Port to connect to): " L_PORT
+    read -p "Enter Destination Port (Xray Port on Kharej): " D_PORT
+    
+    # Using the PRIVATE IP of Kharej as destination
+    DEST_IP=$PRIVATE_IP_REMOTE
+    
+    echo -e "${BLUE}Applying IPTABLES rules (NAT)...${NC}"
+    
+    cat <<EOF > /usr/local/bin/teejay-fwd.sh
+#!/bin/bash
+# Enable IP Forwarding
+sysctl -w net.ipv4.ip_forward=1 > /dev/null
+
+# Flush existing specific rules to avoid duplicates (Simple flush)
+# Ideally, we should manage chains, but for simplicity:
+iptables -t nat -D PREROUTING -p tcp --dport $L_PORT -j DNAT --to-destination $DEST_IP:$D_PORT 2>/dev/null
+iptables -t nat -D PREROUTING -p udp --dport $L_PORT -j DNAT --to-destination $DEST_IP:$D_PORT 2>/dev/null
+iptables -t nat -D POSTROUTING -j MASQUERADE 2>/dev/null
+
+# Add Rules
+iptables -t nat -A PREROUTING -p tcp --dport $L_PORT -j DNAT --to-destination $DEST_IP:$D_PORT
+iptables -t nat -A PREROUTING -p udp --dport $L_PORT -j DNAT --to-destination $DEST_IP:$D_PORT
+iptables -t nat -A POSTROUTING -j MASQUERADE
+
+echo "Forwarding: :$L_PORT -> $DEST_IP:$D_PORT set."
+EOF
+    
+    chmod +x /usr/local/bin/teejay-fwd.sh
+    bash /usr/local/bin/teejay-fwd.sh
+    
+    echo -e "${GREEN}Port Forwarding Active!${NC}"
+    echo -e "Connect your client to: ${LOCAL_IP}:${L_PORT}"
+    read -p "Press Enter to return..."
+}
+
+function uninstall_all() {
+    echo -e "${RED}Uninstalling TeeJay Tunnel...${NC}"
+    systemctl stop teejay-tunnel
+    systemctl disable teejay-tunnel
+    rm /etc/systemd/system/teejay-tunnel.service
+    rm /usr/local/bin/teejay*
+    ip tunnel del tj-tun0
+    rm $TUNNEL_CONF
+    echo -e "${GREEN}Cleaned up successfully.${NC}"
     read -p "Press Enter..."
 }
 
-uninstall() {
-    systemctl stop teejay-tun.service 2>/dev/null
-    systemctl disable teejay-tun.service 2>/dev/null
-    rm /etc/systemd/system/teejay-tun.service 2>/dev/null
-    iptables -t nat -F
-    crontab -l | grep -v "tj-tun" | crontab -
-    add_log "Cleanup completed."
-    read -p "System wiped. Press Enter..."
-}
+# Main Loop
+check_root
 
-# --- MENU ---
 while true; do
-    banner
-    render_logs
-    echo -e "${CYAN}1 - Setup Iran Server${NC}"
-    echo -e "${CYAN}2 - Setup Kharej Server${NC}"
-    echo -e "${CYAN}3 - Status & Ping Test${NC}"
-    echo -e "${CYAN}4 - Uninstall / Clear All${NC}"
-    echo -e "${CYAN}5 - Port Forwarding${NC}"
-    echo -e "${RED}0 - Exit${NC}"
-    echo ""
-    read -p "Choice: " choice
+    print_logo
+    echo "1 - Setup Iran (Master)"
+    echo "2 - Setup Kharej (Slave)"
+    echo "3 - Status (Ping Test)"
+    echo "4 - Tunnel & Port Forward (Iran Side)"
+    echo "5 - Uninstall / Clear"
+    echo "0 - Exit"
+    echo "------------------------------------------------"
+    read -p "Select Option: " choice
+    
     case $choice in
-        1) setup_tunnel "Iran" ;;
-        2) setup_tunnel "Kharej" ;;
-        3) status_check ;;
-        4) uninstall ;;
-        5) tunnel_forward ;;
+        1) setup_tunnel "master" ;;
+        2) setup_tunnel "slave" ;;
+        3) show_status ;;
+        4) setup_forwarding ;;
+        5) uninstall_all ;;
         0) exit 0 ;;
-        *) add_log "Invalid Option";;
+        *) echo "Invalid option" ;;
     esac
 done
